@@ -1,16 +1,57 @@
-import { evaluateExpression } from '@/utils/expressions'
+import { evaluateExpression, _eval } from '@/utils/expressions'
 
 /**
- * Safely parse link_filters which can be a JSON string or already an object.
- * Returns the parsed object or null.
+ * Parse a docfield's `link_filters` into the filter mapping the link search wants.
+ *
+ * Frappe stores link filters as a list of 4-tuples:
+ *   [[link_doctype, fieldname, operator, value], ...]
+ *
+ * `frappe.desk.search.search_link` takes that list fine for most doctypes, but
+ * not for ones registering a `standard_queries` hook — `User` is the only one in
+ * core, and its `user_query()` calls `filters.get()`, so a list raises
+ * `AttributeError: 'list' object has no attribute 'get'` and the dropdown comes
+ * back empty. A mapping works for *every* doctype, so normalise to one:
+ *   { fieldname: [operator, value], ... }
+ *
+ * `eval:` values are resolved here because the server never does — it would
+ * compare against the literal string "eval:doc.customer" and match nothing.
+ *
+ * Mirrors desk's `link.js: apply_link_field_filters()` + `parse_filters()`.
+ * A value that is already a mapping is returned untouched, which covers legacy
+ * dict-shaped data and makes this idempotent (the Link->User branches re-read
+ * the mapping they write back into `field.link_filters`).
+ *
+ * @param {string|object|null} linkFilters - raw docfield.link_filters
+ * @param {object} [context] - { doc, parent } used to resolve `eval:` values
+ * @returns {object|null} filters ready for search_link, or null
  */
-export function parseLinkFilters(linkFilters) {
+export function parseLinkFilters(linkFilters, context = {}) {
   if (!linkFilters) return null
-  if (typeof linkFilters === 'object') return linkFilters
+
+  let parsed = linkFilters
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed)
+    } catch {
+      return null
+    }
+  }
+
+  if (!Array.isArray(parsed)) return parsed
+
   try {
-    return JSON.parse(linkFilters)
-  } catch {
-    return null
+    const filters = {}
+    for (const filter of parsed) {
+      let [, fieldname, operator, value] = filter
+      if (value?.startsWith?.('eval:')) {
+        value = _eval(value.slice(5), context)
+      }
+      filters[fieldname] = [operator, value]
+    }
+    return filters
+  } catch (e) {
+    console.error('Invalid link_filters:', linkFilters, e)
+    return {}
   }
 }
 

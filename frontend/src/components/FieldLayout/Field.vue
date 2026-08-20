@@ -494,7 +494,7 @@ const field = computed(() => {
     field.link_filters = JSON.stringify({
       name: ['in', users.data.crmUsers?.map((user) => user.name)],
       ignore_user_type: 1,
-      ...(parseLinkFilters(field.link_filters) || {}),
+      ...(parseLinkFilters(field.link_filters, { doc: data.value }) || {}),
     })
   }
 
@@ -531,7 +531,7 @@ const field = computed(() => {
 
   let _field = {
     ...field,
-    filters: parseLinkFilters(field.link_filters),
+    filters: parseLinkFilters(field.link_filters, { doc: data.value }),
     placeholder: field.placeholder || field.label,
     display_via_depends_on: displayViaDependsOn,
     mandatory_via_depends_on: evaluateDependsOnValue(
