@@ -2,6 +2,8 @@
 # See license.txt
 
 
+from unittest.mock import patch
+
 import frappe
 from frappe.tests import IntegrationTestCase
 from frappe.tests.utils import make_test_records
@@ -15,6 +17,8 @@ from crm.api.dashboard import (
 	get_average_won_deal_value,
 	get_base_currency_symbol,
 	get_chart,
+	get_chart_options,
+	get_core_chart_options,
 	get_dashboard,
 	get_deal_status_change_counts,
 	get_deals_by_salesperson,
@@ -649,3 +653,132 @@ class TestDashboard(IntegrationTestCase):
 			self.assertIn("name", item)
 			# Validate name is not empty
 			self.assertTrue(item["name"])
+
+
+_real_get_hooks = frappe.get_hooks
+
+
+def _hook_side_effect(crm_dashboard_charts):
+	"""Overrides only crm_dashboard_charts; forwards everything else to the real get_hooks."""
+
+	def side_effect(hook=None, default="_KEEP_DEFAULT_LIST", app_name=None):
+		if hook == "crm_dashboard_charts":
+			return crm_dashboard_charts
+		return _real_get_hooks(hook, default, app_name)
+
+	return side_effect
+
+
+class TestDashboardContributedCharts(IntegrationTestCase):
+	def setUp(self):
+		self.from_date = get_first_day(nowdate())
+		self.to_date = get_last_day(nowdate())
+
+	def test_no_contributions_by_default(self):
+		options = get_chart_options()
+		self.assertIn("total_leads", [o["value"] for o in options["number_chart"]])
+
+	@patch("frappe.get_hooks")
+	def test_contributed_chart_appears_in_options(self, mock_get_hooks):
+		mock_get_hooks.side_effect = _hook_side_effect(
+			{
+				"number_chart": [
+					{
+						"label": "Total Calls",
+						"value": "total_calls",
+						"resolver": "crm.api.dashboard.get_total_leads",
+					}
+				]
+			}
+		)
+		options = get_chart_options()
+		values = [o["value"] for o in options["number_chart"]]
+		self.assertIn("total_calls", values)
+		self.assertNotIn("resolver", options["number_chart"][-1])
+
+	@patch("frappe.get_hooks")
+	def test_contributed_chart_resolves(self, mock_get_hooks):
+		mock_get_hooks.side_effect = _hook_side_effect(
+			{
+				"number_chart": [
+					{
+						"label": "Aliased Leads",
+						"value": "aliased_leads",
+						"resolver": "crm.api.dashboard.get_total_leads",
+					}
+				]
+			}
+		)
+		result = get_chart("aliased_leads", "number_chart", self.from_date, self.to_date)
+		self.assertEqual(result["title"], "Total leads")
+
+	@patch("frappe.get_hooks")
+	def test_multiple_apps_contribute_simultaneously(self, mock_get_hooks):
+		mock_get_hooks.side_effect = _hook_side_effect(
+			{
+				"number_chart": [
+					{
+						"label": "App B",
+						"value": "app_b_chart",
+						"resolver": "crm.api.dashboard.get_total_leads",
+					},
+					{"label": "App C", "value": "app_c_chart", "resolver": "crm.api.dashboard.get_won_deals"},
+				]
+			}
+		)
+		self.assertEqual(
+			get_chart("app_b_chart", "number_chart", self.from_date, self.to_date)["title"], "Total leads"
+		)
+		self.assertEqual(
+			get_chart("app_c_chart", "number_chart", self.from_date, self.to_date)["title"], "Won deals"
+		)
+
+	@patch("frappe.get_hooks")
+	def test_cannot_shadow_core_chart(self, mock_get_hooks):
+		mock_get_hooks.side_effect = _hook_side_effect(
+			{
+				"number_chart": [
+					{
+						"label": "Hijacked",
+						"value": "total_leads",
+						"resolver": "crm.api.dashboard.get_won_deals",
+					}
+				]
+			}
+		)
+		options = get_chart_options()
+		matches = [o for o in options["number_chart"] if o["value"] == "total_leads"]
+		self.assertEqual(len(matches), 1)
+		self.assertEqual(matches[0]["label"], "Total Leads")
+		result = get_chart("total_leads", "number_chart", self.from_date, self.to_date)
+		self.assertEqual(result["title"], "Total leads")
+
+	@patch("frappe.get_hooks")
+	def test_unknown_chart_type_ignored(self, mock_get_hooks):
+		mock_get_hooks.side_effect = _hook_side_effect(
+			{
+				"pie_chart": [
+					{
+						"label": "Something",
+						"value": "something",
+						"resolver": "crm.api.dashboard.get_total_leads",
+					}
+				]
+			}
+		)
+		self.assertNotIn("pie_chart", get_chart_options())
+
+	@patch("frappe.get_hooks")
+	def test_malformed_contribution_ignored(self, mock_get_hooks):
+		mock_get_hooks.side_effect = _hook_side_effect(
+			{
+				"number_chart": [
+					{"label": "No value or resolver"},
+					{"value": "no_label", "resolver": "crm.api.dashboard.get_total_leads"},
+					{"label": "No resolver", "value": "no_resolver"},
+				]
+			}
+		)
+		core_values = {o["value"] for o in get_core_chart_options()["number_chart"]}
+		values = {o["value"] for o in get_chart_options()["number_chart"]}
+		self.assertEqual(values - core_values, set())

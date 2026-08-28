@@ -61,38 +61,12 @@ def get_dashboard(from_date: str | None = None, to_date: str | None = None, user
 	return layout
 
 
-@frappe.whitelist()
-@sales_user_only
-def get_chart(
-	name: str, type: str, from_date: str | None = None, to_date: str | None = None, user: str | None = None
-):
-	"""
-	Get number chart data for the dashboard.
-	"""
-	if not from_date or not to_date:
-		from_date = frappe.utils.get_first_day(from_date or frappe.utils.nowdate())
-		to_date = frappe.utils.get_last_day(to_date or frappe.utils.nowdate())
-
-	roles = frappe.get_roles(frappe.session.user)
-	is_sales_manager = "Sales Manager" in roles or "System Manager" in roles
-	is_sales_user = "Sales User" in roles and not is_sales_manager
-
-	if is_sales_user:
-		user = frappe.session.user
-
-	method_name = f"get_{name}"
-	if hasattr(frappe.get_attr("crm.api.dashboard"), method_name):
-		method = getattr(frappe.get_attr("crm.api.dashboard"), method_name)
-		return method(from_date, to_date, user)
-	else:
-		return {"error": _("Invalid chart name")}
+#: chart types that accept contributed options via the crm_dashboard_charts hook
+CONTRIBUTABLE_CHART_TYPES = ("number_chart", "axis_chart", "donut_chart")
 
 
-@frappe.whitelist()
-@sales_user_only
-def get_chart_options():
-	"""
-	Return the selectable options for the "Add Chart" dialog, grouped by chart type."""
+def get_core_chart_options():
+	"""CRM's own built-in chart options, grouped by chart type."""
 	return {
 		"chart_types": [
 			{"label": _("Spacer"), "value": "spacer"},
@@ -125,6 +99,76 @@ def get_chart_options():
 			{"label": _("Deals by Source"), "value": "deals_by_source"},
 		],
 	}
+
+
+def get_contributed_charts():
+	"""Charts contributed by other apps via the crm_dashboard_charts hook, merged per chart type."""
+	core_values = {
+		option["value"] for t in CONTRIBUTABLE_CHART_TYPES for option in get_core_chart_options()[t]
+	}
+	contributed = {t: [] for t in CONTRIBUTABLE_CHART_TYPES}
+	seen = set(core_values)
+
+	for chart_type, options in frappe.get_hooks("crm_dashboard_charts", default={}).items():
+		if chart_type not in CONTRIBUTABLE_CHART_TYPES:
+			continue
+		for option in options:
+			value, resolver, label = option.get("value"), option.get("resolver"), option.get("label")
+			if not value or not resolver or not label or value in seen:
+				continue
+			seen.add(value)
+			contributed[chart_type].append({"label": label, "value": value, "resolver": resolver})
+
+	return contributed
+
+
+@frappe.whitelist()
+@sales_user_only
+def get_chart(
+	name: str, type: str, from_date: str | None = None, to_date: str | None = None, user: str | None = None
+):
+	"""
+	Get number chart data for the dashboard.
+	"""
+	valid_chart_names = {option["value"] for values in get_chart_options().values() for option in values}
+	if name not in valid_chart_names:
+		return {"error": _("Invalid chart name")}
+
+	if not from_date or not to_date:
+		from_date = frappe.utils.get_first_day(from_date or frappe.utils.nowdate())
+		to_date = frappe.utils.get_last_day(to_date or frappe.utils.nowdate())
+
+	roles = frappe.get_roles(frappe.session.user)
+	is_sales_manager = "Sales Manager" in roles or "System Manager" in roles
+	is_sales_user = "Sales User" in roles and not is_sales_manager
+
+	if is_sales_user:
+		user = frappe.session.user
+
+	method_name = f"get_{name}"
+	if hasattr(frappe.get_attr("crm.api.dashboard"), method_name):
+		method = getattr(frappe.get_attr("crm.api.dashboard"), method_name)
+		return method(from_date, to_date, user)
+
+	for options in get_contributed_charts().values():
+		for option in options:
+			if option["value"] == name:
+				return frappe.get_attr(option["resolver"])(from_date, to_date, user)
+
+	return {"error": _("Invalid chart name")}
+
+
+@frappe.whitelist()
+@sales_user_only
+def get_chart_options():
+	"""
+	Return the selectable options for the "Add Chart" dialog, grouped by chart type.
+	"""
+	options = get_core_chart_options()
+	contributed = get_contributed_charts()
+	for chart_type in CONTRIBUTABLE_CHART_TYPES:
+		options[chart_type] += [{"label": o["label"], "value": o["value"]} for o in contributed[chart_type]]
+	return options
 
 
 def get_total_leads(from_date: str | None = None, to_date: str | None = None, user: str | None = None):
