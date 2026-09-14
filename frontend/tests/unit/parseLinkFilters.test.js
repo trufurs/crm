@@ -21,7 +21,9 @@ describe('parseLinkFilters', () => {
     expect(parseLinkFilters('not json')).toBeNull()
   })
 
-  it('handles array JSON', () => {
-    expect(parseLinkFilters('[1,2]')).toEqual([1, 2])
+  it('normalizes list-format link filter conditions to dict', () => {
+    expect(parseLinkFilters('[["User","role","=","Sales Manager"]]')).toEqual({
+      role: ['=', 'Sales Manager'],
+    })
   })
 })

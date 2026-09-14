@@ -1,17 +1,32 @@
 import { evaluateExpression } from '@/utils/expressions'
 
 /**
- * Safely parse link_filters which can be a JSON string or already an object.
- * Returns the parsed object or null.
+ * Safely parse link_filters, which can be a JSON string or already an
+ * object/array, and normalize the result to dict form
+ * (`{fieldname: [operator, value]}`) via linkFiltersListToDict.
+ * Returns the parsed dict, or null if there's nothing to parse.
  */
 export function parseLinkFilters(linkFilters) {
   if (!linkFilters) return null
-  if (typeof linkFilters === 'object') return linkFilters
+  if (typeof linkFilters === 'object') return linkFiltersListToDict(linkFilters)
   try {
-    return JSON.parse(linkFilters)
+    return linkFiltersListToDict(JSON.parse(linkFilters))
   } catch {
     return null
   }
+}
+
+export function linkFiltersListToDict(conditions) {
+  if (!Array.isArray(conditions)) return conditions || {}
+
+  const dict = {}
+  for (const condition of conditions) {
+    if (!Array.isArray(condition)) continue
+    const [fieldname, operator, value] =
+      condition.length === 4 ? condition.slice(1) : condition
+    if (fieldname) dict[fieldname] = [operator, value]
+  }
+  return dict
 }
 
 /**
